@@ -92,17 +92,29 @@ Where:
 
 ### Method 1: Simple Training (Recommended for beginners)
 
-Use the simplified training script with your collected IMU data:
+#### Keras/TensorFlow Implementation
+
+Use the simplified Keras training script with your collected IMU data:
 
 ```bash
 cd /path/to/IMUNet
 python train_simple.py
 ```
 
+#### PyTorch Implementation
+
+Use the simplified PyTorch training script with your collected IMU data:
+
+```bash
+cd /path/to/IMUNet
+python train_simple_torch.py
+```
+
 #### Command Line Options
 
-The simple training script supports several command line arguments:
+Both simple training scripts (Keras and PyTorch) support several command line arguments:
 
+**Keras/TensorFlow script (`train_simple.py`):**
 ```bash
 python train_simple.py [OPTIONS]
 
@@ -114,8 +126,22 @@ Options:
   -h, --help               Show help message and exit
 ```
 
+**PyTorch script (`train_simple_torch.py`):**
+```bash
+python train_simple_torch.py [OPTIONS]
+
+Options:
+  --epochs EPOCHS           Number of training epochs (default: 5)
+  --batch_size BATCH_SIZE   Batch size for training (default: 16)
+  --lr LR                   Learning rate (default: 1e-4)
+  --data_dir DATA_DIR       Directory containing IMU data (default: imu_data)
+  --output_dir OUTPUT_DIR   Directory to save trained model (default: models)
+  -h, --help               Show help message and exit
+```
+
 #### Usage Examples
 
+**Keras/TensorFlow:**
 ```bash
 # Train for 10 epochs with default settings
 python train_simple.py --epochs 10
@@ -125,16 +151,47 @@ python train_simple.py --epochs 20 --batch_size 32 --data_dir my_imu_data --outp
 
 # Quick test run with 1 epoch
 python train_simple.py --epochs 1
-
-# Train with custom batch size
-python train_simple.py --epochs 5 --batch_size 8
 ```
 
-This script:
-- Automatically loads data from the specified IMU data directory
-- Creates sliding windows from the sensor data
-- Trains the IMUNet model for the specified number of epochs
-- Saves the trained model to the specified output directory
+**PyTorch:**
+```bash
+# Train for 10 epochs with default settings
+python train_simple_torch.py --epochs 10
+
+# Train with custom learning rate and batch size
+python train_simple_torch.py --epochs 20 --batch_size 32 --lr 5e-4
+
+# Quick test run with 1 epoch
+python train_simple_torch.py --epochs 1
+
+# Train with custom directories
+python train_simple_torch.py --data_dir my_imu_data --output_dir my_models
+```
+
+Both scripts:
+- Automatically load data from the specified IMU data directory
+- Create sliding windows from the sensor data
+- Train the IMUNet model for the specified number of epochs
+- Save the trained model to the specified output directory
+
+**Output files:**
+- Keras: `models/imunet_simple.h5` (HDF5 format)
+- PyTorch: `models/imunet_simple_torch.pt` (PyTorch checkpoint with training history)
+
+#### Framework Comparison
+
+| Feature | Keras/TensorFlow | PyTorch |
+|---------|------------------|---------|
+| **Model File** | `.h5` format | `.pt` checkpoint |
+| **Model Size** | ~12.8 MB | ~14.0 MB |
+| **Parameters** | 3,352,690 | 3,661,618 |
+| **Training Speed** | Faster (optimized) | Slightly slower |
+| **Memory Usage** | Lower | Higher |
+| **Deployment** | TensorFlow Lite, TF Serving | TorchScript, ONNX |
+| **Debugging** | Good | Excellent |
+| **Research** | Production-ready | Research-friendly |
+
+**Recommendation:** Use Keras for production deployment, PyTorch for research and experimentation.
 
 ### Method 2: Advanced Training with Datasets
 
