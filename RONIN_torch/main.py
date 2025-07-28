@@ -8,24 +8,43 @@ Benchmark, Evaluations, & New Methods. In 2020 IEEE International Conference on 
 
 
 """
+print("=== MAIN.PY STARTING ===")
 import time
+print("Imported time")
 import matplotlib.pyplot as plt
+print("Imported matplotlib")
 from scipy.interpolate import interp1d
+print("Imported scipy")
 from tensorboardX import SummaryWriter
+print("Imported tensorboardX")
 from torch.utils.data import DataLoader
+print("Imported DataLoader")
 from utils import *
+print("Imported utils")
 from metric import compute_ate_rte, compute_absolute_trajectory_error
+print("Imported metric")
 from model_resnet1d import *
+print("Imported model_resnet1d")
 from MobileNetV2 import MobileNetV2
+print("Imported MobileNetV2")
 from MobileNet import MobileNet
+print("Imported MobileNet")
 from MnasNet import MnasNet
+print("Imported MnasNet")
 from IMUNet import *
-from CNN_LSTM import *
+print("Imported IMUNet")
+# from CNN_LSTM import *
 # from IMUNet_1_Pytorch import IMUNet_1
 # from IMUNet_2_Pytorch import IMUNet_2
 from EfficientnetB0 import EfficientNetB0
+print("Imported EfficientnetB0")
 from torch.autograd import Variable
+print("Imported Variable")
 import torch
+print("Imported torch")
+print("=== ALL IMPORTS COMPLETED ===")
+
+# torch.autograd.set_detect_anomaly(True)
 
 # torch.autograd.set_detect_anomaly(True)
 
@@ -70,8 +89,9 @@ def get_model(arch):
     # network = IMUNet(_input_channel, _output_channel, DSConv, [2, 2, 2, 2],
     #                     base_plane=64, output_block=FCOutputModule, kernel_size=3, **_fc_config)
     
-        network = CNN_LSTM(3, 130)
-        print(network)
+        # network = CNN_LSTM(3, 130)
+        # print(network)
+        raise ValueError('CNN_LSTM not available')
     # elif arch == 'imunet_1':
     # network = IMUNet_1(_input_channel, _output_channel, BasicBlock1D, [2, 2, 2, 2],
     # base_plane=64, output_block=FCOutputModule, kernel_size=3, **_fc_config)
@@ -88,14 +108,26 @@ def run_test(network, data_loader, device, eval_mode=True):
     preds_all = []
     if eval_mode:
         network.eval()
+    
+    batch_count = 0
+    total_batches = len(data_loader)
+    print(f"Running test on {total_batches} batches...")
+    
     for bid, (feat, targ, _, _) in enumerate(data_loader):
+        if batch_count % 50 == 0:
+            print(f"Test batch {batch_count}/{total_batches}")
+        batch_count += 1
+        
         if (args.arch == 'IMUNet_'):
             feat = feat.unsqueeze(1)
         pred = network(feat.to(device)).cpu().detach().numpy()
         targets_all.append(targ.detach().numpy())
         preds_all.append(pred)
+    
+    print("Concatenating results...")
     targets_all = np.concatenate(targets_all, axis=0)
     preds_all = np.concatenate(preds_all, axis=0)
+    print(f"Test completed. Results shape: targets {targets_all.shape}, predictions {preds_all.shape}")
     return targets_all, preds_all
 
 
@@ -168,22 +200,49 @@ def get_dataset_from_list(root_dir, list_path, args, mode, **kwargs):
 def train(args, **kwargs):
     # Loading data
     start_t = time.time()
-    print(args.root_dir)
+    print(f"Starting training with root_dir: {args.root_dir}")
+    print(f"Train list: {args.train_list}")
+    print(f"Val list: {args.val_list}")
+    print(f"Batch size: {args.batch_size}, Epochs: {args.epochs}")
+    
+    print("Loading training dataset...")
     train_dataset = get_dataset_from_list(args.root_dir, args.train_list, args, mode='train')
+    print(f"Training dataset loaded successfully with {len(train_dataset)} samples")
+    
+    print("Creating training data loader...")
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+    print("Training data loader created successfully")
 
     end_t = time.time()
     print('Training set loaded. Feature size: {}, target size: {}. Time usage: {:.3f}s'.format(
         train_dataset.feature_dim, train_dataset.target_dim, end_t - start_t))
     val_dataset, val_loader = None, None
     if args.val_list is not None:
+        print("Loading validation dataset...")
         val_dataset = get_dataset_from_list(args.root_dir, args.val_list, args, mode='val')
+        print(f"Validation dataset loaded successfully with {len(val_dataset)} samples")
+        print("Creating validation data loader...")
         val_loader = DataLoader(val_dataset, batch_size=512, shuffle=True)
+        print("Validation data loader created successfully")
 
-    device = torch.device('cuda:0' if torch.cuda.is_available() and not args.cpu else 'cpu')
+    print("Setting up device and directories...")
+    # Check for available devices
+    print(f"CUDA available: {torch.cuda.is_available()}")
+    if hasattr(torch.backends, 'mps'):
+        print(f"MPS (Metal Performance Shaders) available: {torch.backends.mps.is_available()}")
+    
+    if torch.cuda.is_available() and not args.cpu:
+        device = torch.device('cuda:0')
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available() and not args.cpu:
+        device = torch.device('mps')
+    else:
+        device = torch.device('cpu')
+    
+    print(f"Using device: {device}")
 
     summary_writer = None
     if args.out_dir is not None:
+        print(f"Setting up output directory: {args.out_dir}")
         if not osp.isdir(args.out_dir):
             os.makedirs(args.out_dir)
         write_config(args)
@@ -191,11 +250,14 @@ def train(args, **kwargs):
             os.makedirs(osp.join(args.out_dir, 'checkpoints'))
         if not osp.isdir(osp.join(args.out_dir, 'logs')):
             os.makedirs(osp.join(args.out_dir, 'logs'))
+        print("Output directories created successfully")
 
     global _fc_config
     _fc_config['in_dim'] = args.window_size // 32 + 1
 
+    print("Creating network model...")
     network = get_model(args).to(device)
+    print("Network created successfully:")
     print(network)
     print('Number of train samples: {}'.format(len(train_dataset)))
     if val_dataset:
@@ -205,7 +267,7 @@ def train(args, **kwargs):
 
     criterion = torch.nn.MSELoss()
     optimizer = torch.optim.Adam(network.parameters(), args.lr)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.1, patience=10, verbose=True, eps=1e-12)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.1, patience=10, eps=1e-12)
     # torch.autograd.set_detect_anomaly(True)
     start_epoch = 0
     if args.continue_from is not None and osp.exists(args.continue_from):
@@ -226,7 +288,9 @@ def train(args, **kwargs):
     train_losses_all, val_losses_all = [], []
 
     # Get the initial loss.
+    print("Computing initial training loss...")
     init_train_targ, init_train_pred = run_test(network, train_loader, device, eval_mode=False)
+    print("Initial training loss computed successfully")
 
     init_train_loss = np.mean((init_train_targ - init_train_pred) ** 2, axis=0)
     train_losses_all.append(np.mean(init_train_loss))
@@ -236,7 +300,9 @@ def train(args, **kwargs):
         add_summary(summary_writer, init_train_loss, 0, 'train')
 
     if val_loader is not None:
+        print("Computing initial validation loss...")
         init_val_targ, init_val_pred = run_test(network, val_loader, device)
+        print("Initial validation loss computed successfully")
         init_val_loss = np.mean((init_val_targ - init_val_pred) ** 2, axis=0)
         val_losses_all.append(np.mean(init_val_loss))
         print('Validation loss: {}/{:.6f}'.format(init_val_loss, val_losses_all[-1]))
@@ -244,11 +310,17 @@ def train(args, **kwargs):
             add_summary(summary_writer, init_val_loss, 0, 'val')
 
     try:
+        print("Starting training loop...")
         for epoch in range(start_epoch, args.epochs):
+            print(f"Starting epoch {epoch}")
             start_t = time.time()
             network.train()
             train_outs, train_targets = [], []
+            batch_count = 0
             for batch_id, (feat, targ, _, _) in enumerate(train_loader):
+                if batch_count % 10 == 0:
+                    print(f"Processing batch {batch_count}")
+                batch_count += 1
                 if (args.arch == 'IMUNet_'):
                     feat = feat.unsqueeze(1)
                 feat, targ = feat.to(device), targ.to(device)
