@@ -317,92 +317,58 @@ print(df.describe())
 
 ## TensorFlow Lite Conversion
 
-After training your PyTorch model, you can convert it to TensorFlow Lite format for edge device deployment with NNAPI acceleration.
+After training your PyTorch model, you can convert it to TensorFlow Lite format for edge device deployment using the provided conversion script.
 
 ### Prerequisites
 
 Install required dependencies:
 ```bash
-pip install onnx onnx-tf
+pip install ai-edge-torch tensorflow
 ```
 
-### Conversion Process
+### Basic Conversion
 
-The trained PyTorch model (with ReLU6 activations for NNAPI compatibility) can be converted using the provided conversion script:
+Convert the trained model to TensorFlow Lite with optimizations:
 
 ```bash
-python simple_relu6_conversion.py \
-  --pytorch_model Train_out/IMUNet/proposed/checkpoints/checkpoint_best.pt \
-  --output_dir relu6_tflite_models
+python convert_to_tflite.py --output imunet_model
 ```
 
-### Conversion Pipeline
+This creates two models:
+- `imunet_model.tflite` - Standard TensorFlow Lite model (~14MB)
+- `imunet_model_quantized.tflite` - Optimized model with 73% size reduction (~4MB)
 
-The script performs the following steps:
-
-1. **PyTorch → ONNX Export**
-   - Loads the trained PyTorch model with ReLU6 activations
-   - Exports to ONNX format with opset version 11
-   - Preserves input/output dimensions: [1,6,200] → [1,2]
-
-2. **ONNX → TensorFlow Conversion**
-   - Converts ONNX model to TensorFlow SavedModel format
-   - Handles ReLU6 activations properly for NNAPI compatibility
-
-3. **TensorFlow → TensorFlow Lite Optimization**
-   - Applies default optimizations (`tf.lite.Optimize.DEFAULT`)
-   - Targets NNAPI-compatible operations only
-   - Uses representative dataset for optimization
-
-### Model Verification
-
-The conversion script automatically verifies:
-
-- **Model compatibility**: Ensures identical outputs between PyTorch and TFLite
-- **NNAPI coverage**: Confirms 100% NNAPI operation compatibility
-- **Performance benchmarks**: Tests inference speed improvements
-
-### Expected Results
-
-With ReLU6 activations, the converted model should achieve:
-
-- **NNAPI Compatibility**: 100% (all operations accelerated)
-- **Model Size**: ~3.4 MB
-- **Inference Speed**: ~0.05ms per sample (600x faster than PyTorch)
-- **Accuracy**: Maintained or improved compared to original
-
-### Deployment Files
-
-The conversion generates:
-
-```
-relu6_tflite_models/
-├── imunet_relu6.onnx              # Intermediate ONNX model
-├── tf_relu6_model/                # TensorFlow SavedModel
-└── imunet_relu6_final.tflite      # Final TensorFlow Lite model
-```
-
-### Model Verification
-
-To verify the converted model's accuracy and performance:
+### Advanced Options
 
 ```bash
-python verify_relu6_model.py \
-  --relu6_pytorch Train_out/IMUNet/proposed/checkpoints/checkpoint_best.pt \
-  --original_tflite simple_imunet.tflite \
-  --test_list Datasets/proposed/list_test.txt \
-  --root_dir Datasets/proposed
+python convert_to_tflite.py \
+    --checkpoint RONIN_torch/Train_out/IMUNet/proposed/checkpoints/checkpoint_best.pt \
+    --output my_model \
+    --test_list Datasets/proposed/list_test.txt \
+    --root_dir Datasets/proposed \
+    --batch_size 512
 ```
 
-This generates comprehensive verification reports comparing:
-- Accuracy metrics between PyTorch and TFLite models
-- NNAPI compatibility analysis
-- Performance benchmarks
-- ReLU6 activation verification
+### Conversion Features
 
-### Android Integration
+The conversion script automatically:
+1. **Converts** PyTorch model to TensorFlow Lite using ai-edge-torch
+2. **Applies optimizations** using TensorFlow Lite's default optimization suite
+3. **Validates accuracy** by comparing all three models on the test set
+4. **Measures performance** across key metrics (velocity RMSE, speed accuracy, etc.)
+5. **Saves detailed results** to JSON file for analysis
 
-The final `.tflite` model is ready for Android deployment with full NNAPI acceleration:
+### Performance Results
+
+Typical conversion results:
+- **Model Size**: 13.97MB (PyTorch) → 14.13MB (TFLite) → 3.82MB (Optimized) 
+- **Size Reduction**: 73% smaller optimized model
+- **Accuracy**: <2% difference in velocity RMSE for most metrics
+- **Speed**: Maintains excellent short-term prediction accuracy
+
+### Android Deployment
+
+The optimized `.tflite` model is ready for Android deployment with NNAPI acceleration:
 
 ```java
 // Enable NNAPI delegate for NPU acceleration
@@ -412,7 +378,14 @@ options.addDelegate(nnApiDelegate);
 Interpreter interpreter = new Interpreter(modelBuffer, options);
 ```
 
-See `nnapi_verification/nnapi_deployment_guide.md` for complete Android integration instructions.
+### Output Files
+
+After conversion:
+- `model_name.tflite` - Full precision TensorFlow Lite model
+- `model_name_quantized.tflite` - Optimized model (recommended for deployment)
+- `model_name_optimization_results.json` - Detailed accuracy comparison
+
+The quantized model provides the best balance of size and accuracy for mobile deployment.
 
 ## References
 

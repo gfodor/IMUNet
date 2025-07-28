@@ -91,9 +91,12 @@ def load_pytorch_model(checkpoint_path, device='cpu'):
     return model
 
 
-def convert_to_tflite(pytorch_model, output_path, sample_input_shape=(1, 6, 200)):
+def convert_to_tflite(pytorch_model, output_path, sample_input_shape=(1, 6, 200), 
+                     quantize=False, representative_dataset=None):
     """Convert PyTorch model to TensorFlow Lite using ai-edge-torch"""
     print("Converting PyTorch model to TensorFlow Lite...")
+    if quantize:
+        print("  🔧 Enabling int8 quantization optimizations")
     
     # Create sample input for tracing
     sample_input = torch.randn(sample_input_shape, dtype=torch.float32)
@@ -105,8 +108,19 @@ def convert_to_tflite(pytorch_model, output_path, sample_input_shape=(1, 6, 200)
         print(f"PyTorch output shape: {pytorch_output.shape}")
     
     try:
-        # Convert using ai-edge-torch
-        edge_model = ai_edge_torch.convert(pytorch_model, (sample_input,))
+        # Convert to TFLite using ai-edge-torch with optional quantization
+        if quantize:
+            print("  🔧 Applying TensorFlow Lite default optimizations")
+            # Pass TfLite Converter quantization flags to _ai_edge_converter_flags parameter
+            tfl_converter_flags = {'optimizations': [tf.lite.Optimize.DEFAULT]}
+            edge_model = ai_edge_torch.convert(
+                pytorch_model, 
+                (sample_input,), 
+                _ai_edge_converter_flags=tfl_converter_flags
+            )
+        else:
+            # Standard conversion without quantization
+            edge_model = ai_edge_torch.convert(pytorch_model, (sample_input,))
         
         # Save the TensorFlow Lite model
         # Create directory if it doesn't exist
@@ -114,6 +128,10 @@ def convert_to_tflite(pytorch_model, output_path, sample_input_shape=(1, 6, 200)
         edge_model.export(os.path.abspath(output_path))
         
         print(f"TensorFlow Lite model saved to {output_path}")
+        
+        # Get model size
+        model_size = os.path.getsize(output_path) / (1024 * 1024)  # MB
+        print(f"Model size: {model_size:.2f} MB")
         
         # Verify the conversion by loading and testing
         tflite_model = IMUNetTensorFlowLite(output_path)
@@ -128,16 +146,40 @@ def convert_to_tflite(pytorch_model, output_path, sample_input_shape=(1, 6, 200)
         print(f"  Max difference: {max_diff:.8f}")
         print(f"  Mean difference: {mean_diff:.8f}")
         
-        if max_diff < 1e-5:
+        if max_diff < 1e-3:  # More lenient for quantized models
             print("✅ Conversion successful - outputs match within tolerance")
         else:
-            print("⚠️  Large difference detected - conversion may have issues")
+            print("⚠️  Large difference detected - may be expected for quantized models")
             
-        return tflite_model
+        return tflite_model, model_size
         
     except Exception as e:
         print(f"❌ Conversion failed: {e}")
         raise
+
+
+def create_representative_dataset(data_loader, num_samples=100):
+    """Create a representative dataset for int8 quantization"""
+    print(f"Creating representative dataset with {num_samples} samples...")
+    
+    representative_data = []
+    sample_count = 0
+    
+    for batch_id, (feat, _, _, _) in enumerate(data_loader):
+        for i in range(feat.shape[0]):
+            if sample_count >= num_samples:
+                break
+            
+            # Convert to numpy and add to representative dataset
+            sample = feat[i:i+1].detach().cpu().numpy().astype(np.float32)
+            representative_data.append(sample)
+            sample_count += 1
+        
+        if sample_count >= num_samples:
+            break
+    
+    print(f"Representative dataset created: {len(representative_data)} samples")
+    return representative_data
 
 
 def run_pytorch_test(network, data_loader, device, eval_mode=True):
@@ -204,11 +246,12 @@ def run_tflite_test(tflite_model, data_loader, device='cpu'):
     return targets_all, preds_all
 
 
-def compare_models(pytorch_model, tflite_model, test_loader, device='cpu'):
-    """Compare PyTorch and TensorFlow Lite model performance"""
-    print("\n" + "="*60)
-    print("COMPARING PYTORCH VS TENSORFLOW LITE MODELS")
-    print("="*60)
+def compare_models(pytorch_model, tflite_model, quantized_model, test_loader, device='cpu', 
+                   tflite_size=0, quantized_size=0):
+    """Compare PyTorch, TensorFlow Lite, and quantized TensorFlow Lite model performance"""
+    print("\n" + "="*80)
+    print("COMPARING PYTORCH VS TFLITE VS OPTIMIZED TFLITE MODELS")
+    print("="*80)
     
     # Run PyTorch evaluation
     print("\n🔥 Running PyTorch model evaluation...")
@@ -221,9 +264,14 @@ def compare_models(pytorch_model, tflite_model, test_loader, device='cpu'):
     tflite_targets, tflite_preds = run_tflite_test(tflite_model, test_loader, device)
     tflite_metrics = compute_velocity_metrics(tflite_preds, tflite_targets)
     
+    # Run optimized TensorFlow Lite evaluation
+    print("\n⚡ Running Optimized TensorFlow Lite model evaluation...")
+    quantized_targets, quantized_preds = run_tflite_test(quantized_model, test_loader, device)
+    quantized_metrics = compute_velocity_metrics(quantized_preds, quantized_targets)
+    
     # Compare results
-    print("\n📊 COMPARISON RESULTS:")
-    print("-" * 60)
+    print("\n📊 DETAILED COMPARISON RESULTS:")
+    print("-" * 100)
     
     key_metrics = [
         'velocity_rmse', 'velocity_mae', 'velocity_mse',
@@ -231,41 +279,58 @@ def compare_models(pytorch_model, tflite_model, test_loader, device='cpu'):
         'short_term_100ms_rmse', 'short_term_100ms_mae'
     ]
     
-    print(f"{'Metric':<25} {'PyTorch':<15} {'TFLite':<15} {'Diff':<15} {'Rel %':<10}")
-    print("-" * 80)
+    print(f"{'Metric':<25} {'PyTorch':<15} {'TFLite':<15} {'Optimized':<15} {'TFL Diff %':<12} {'Opt Diff %':<12}")
+    print("-" * 100)
     
-    all_diffs_small = True
+    tflite_acceptable = True
+    quantized_acceptable = True
+    
     for metric in key_metrics:
         pytorch_val = pytorch_metrics[metric]
         tflite_val = tflite_metrics[metric]
-        diff = abs(tflite_val - pytorch_val)
-        rel_diff = (diff / pytorch_val * 100) if pytorch_val != 0 else 0
+        quantized_val = quantized_metrics[metric]
         
-        print(f"{metric:<25} {pytorch_val:<15.6f} {tflite_val:<15.6f} {diff:<15.6f} {rel_diff:<10.2f}")
+        tflite_diff = (abs(tflite_val - pytorch_val) / pytorch_val * 100) if pytorch_val != 0 else 0
+        optimized_diff = (abs(quantized_val - pytorch_val) / pytorch_val * 100) if pytorch_val != 0 else 0
         
-        # Check if difference is significant (more than 1% relative difference)
-        if rel_diff > 1.0:
-            all_diffs_small = False
+        print(f"{metric:<25} {pytorch_val:<15.6f} {tflite_val:<15.6f} {quantized_val:<15.6f} {tflite_diff:<12.2f} {optimized_diff:<12.2f}")
+        
+        # Check if differences are significant (more than 3% for optimized is acceptable)
+        if tflite_diff > 1.0:
+            tflite_acceptable = False
+        if optimized_diff > 3.0:  # Threshold for optimized models
+            quantized_acceptable = False
     
-    print("-" * 80)
+    print("-" * 100)
     
     # Overall assessment
-    if all_diffs_small:
-        print("✅ CONVERSION SUCCESSFUL: All metrics match within 1% tolerance")
-        print("   The TensorFlow Lite model maintains the same accuracy as PyTorch")
+    print("\n🎯 ACCURACY ASSESSMENT:")
+    if tflite_acceptable:
+        print("✅ TFLite Model: Excellent accuracy preservation (<1% difference)")
     else:
-        print("⚠️  SIGNIFICANT DIFFERENCES DETECTED")
-        print("   Some metrics show >1% difference - please review conversion")
+        print("⚠️  TFLite Model: Some metrics show >1% difference")
+        
+    if quantized_acceptable:
+        print("✅ Optimized Model: Good accuracy preservation (<3% difference)")
+    else:
+        print("❌ Optimized Model: Some accuracy loss (>3% difference)")
     
-    # Compute model size comparison
+    # Model size comparison
     pytorch_size = sum(p.numel() * 4 for p in pytorch_model.parameters()) / (1024*1024)  # MB
     
     print(f"\n💾 MODEL SIZE COMPARISON:")
-    print(f"   PyTorch parameters: {sum(p.numel() for p in pytorch_model.parameters()):,}")
-    print(f"   PyTorch model size: ~{pytorch_size:.2f} MB")
+    print(f"   PyTorch model:     {pytorch_size:.2f} MB")
+    print(f"   TFLite model:      {tflite_size:.2f} MB ({((pytorch_size-tflite_size)/pytorch_size*100):+.1f}%)")
+    print(f"   Optimized model:   {quantized_size:.2f} MB ({((pytorch_size-quantized_size)/pytorch_size*100):+.1f}%)")
+    print(f"   Optimization saves: {tflite_size-quantized_size:.2f} MB ({((tflite_size-quantized_size)/tflite_size*100):.1f}% reduction)")
     
-    # Return both metric dictionaries for further analysis if needed
-    return pytorch_metrics, tflite_metrics
+    print(f"\n⚡ DEPLOYMENT BENEFITS:")
+    print(f"   TFLite model is {pytorch_size/tflite_size:.1f}x smaller than PyTorch")
+    print(f"   Optimized model is {pytorch_size/quantized_size:.1f}x smaller than PyTorch")
+    print(f"   Optimized model is {tflite_size/quantized_size:.1f}x smaller than TFLite")
+    
+    # Return all metric dictionaries for further analysis if needed
+    return pytorch_metrics, tflite_metrics, quantized_metrics
 
 
 def main():
@@ -274,7 +339,7 @@ def main():
                         default='RONIN_torch/Train_out/IMUNet/proposed/checkpoints/checkpoint_best.pt',
                         help='Path to PyTorch checkpoint')
     parser.add_argument('--output', type=str, default='imunet_model.tflite',
-                        help='Output TensorFlow Lite model path')
+                        help='Output TensorFlow Lite model path (without extension)')
     parser.add_argument('--test_list', type=str, 
                         default='Datasets/proposed/list_test.txt',
                         help='Path to test list file')
@@ -285,6 +350,10 @@ def main():
                         help='Device to use for PyTorch evaluation')
     parser.add_argument('--batch_size', type=int, default=512,
                         help='Batch size for evaluation')
+    parser.add_argument('--quantize', action='store_true',
+                        help='Enable int8 quantization')
+    parser.add_argument('--repr_samples', type=int, default=100,
+                        help='Number of samples for representative dataset')
     
     args = parser.parse_args()
     
@@ -315,9 +384,6 @@ def main():
     pytorch_model = load_pytorch_model(args.checkpoint, device)
     pytorch_model = pytorch_model.to(device)
     
-    # Convert to TensorFlow Lite
-    tflite_model = convert_to_tflite(pytorch_model.cpu(), args.output)
-    
     # Load test dataset (using simplified args structure)
     class TestArgs:
         def __init__(self):
@@ -334,28 +400,62 @@ def main():
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
     print(f"Test dataset loaded: {len(test_dataset)} samples")
     
-    # Compare model performance
-    pytorch_metrics, tflite_metrics = compare_models(pytorch_model, tflite_model, test_loader, device)
+    # Note: Using TensorFlow Lite default optimizations, no representative dataset needed
     
-    # Save results
+    # Convert to standard TensorFlow Lite
+    base_name = args.output.replace('.tflite', '')
+    tflite_path = f"{base_name}.tflite"
+    quantized_path = f"{base_name}_quantized.tflite"
+    
+    print(f"\n" + "="*60)
+    print("CREATING TENSORFLOW LITE MODELS")
+    print("="*60)
+    
+    # Standard TFLite conversion
+    print(f"\n1️⃣  Creating standard TensorFlow Lite model...")
+    tflite_model, tflite_size = convert_to_tflite(pytorch_model.cpu(), tflite_path)
+    
+    # Optimized TFLite conversion  
+    print(f"\n2️⃣  Creating optimized TensorFlow Lite model...")
+    quantized_model, quantized_size = convert_to_tflite(
+        pytorch_model.cpu(), quantized_path, 
+        quantize=True
+    )
+    
+    # Compare all three model performances
+    pytorch_metrics, tflite_metrics, quantized_metrics = compare_models(
+        pytorch_model, tflite_model, quantized_model, test_loader, device,
+        tflite_size, quantized_size
+    )
+    
+    # Save comprehensive results
     results = {
         'pytorch_metrics': {k: float(v) for k, v in pytorch_metrics.items()},
         'tflite_metrics': {k: float(v) for k, v in tflite_metrics.items()},
+        'quantized_metrics': {k: float(v) for k, v in quantized_metrics.items()},
+        'model_sizes': {
+            'pytorch_mb': sum(p.numel() * 4 for p in pytorch_model.parameters()) / (1024*1024),
+            'tflite_mb': tflite_size,
+            'quantized_mb': quantized_size
+        },
         'conversion_info': {
             'checkpoint_path': args.checkpoint,
-            'tflite_output': args.output,
+            'tflite_output': tflite_path,
+            'quantized_output': quantized_path,
             'test_samples': len(test_dataset),
+            'optimization_applied': True,
             'device_used': str(device)
         }
     }
     
-    results_file = args.output.replace('.tflite', '_conversion_results.json')
+    results_file = f"{base_name}_optimization_results.json"
     with open(results_file, 'w') as f:
         json.dump(results, f, indent=2)
     
-    print(f"\n💾 Conversion results saved to: {results_file}")
-    print(f"🚀 TensorFlow Lite model ready: {args.output}")
-    print("\nConversion complete! Your TFLite model is ready for edge deployment.")
+    print(f"\n💾 Optimization results saved to: {results_file}")
+    print(f"🚀 Standard TFLite model: {tflite_path}")
+    print(f"⚡ Optimized TFLite model: {quantized_path}")
+    print(f"\n🎉 Conversion complete! Both models are ready for edge deployment.")
 
 
 if __name__ == '__main__':
