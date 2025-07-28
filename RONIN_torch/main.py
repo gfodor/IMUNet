@@ -197,6 +197,161 @@ def get_dataset_from_list(root_dir, list_path, args, mode, **kwargs):
     return get_dataset(root_dir, data_list, args, **kwargs)
 
 
+def compute_velocity_metrics(pred_velocities, gt_velocities):
+    """
+    Compute velocity prediction metrics following IMUNet paper standards.
+    
+    Args:
+        pred_velocities: Predicted velocities (N, 2)
+        gt_velocities: Ground truth velocities (N, 2) 
+        
+    Returns:
+        Dictionary of metrics
+    """
+    # Velocity MSE (primary metric for IMUNet)
+    velocity_mse = np.mean((pred_velocities - gt_velocities) ** 2)
+    velocity_rmse = np.sqrt(velocity_mse)
+    
+    # Component-wise errors
+    vx_mse = np.mean((pred_velocities[:, 0] - gt_velocities[:, 0]) ** 2)
+    vy_mse = np.mean((pred_velocities[:, 1] - gt_velocities[:, 1]) ** 2)
+    vx_rmse = np.sqrt(vx_mse)
+    vy_rmse = np.sqrt(vy_mse)
+    
+    # Mean absolute error
+    velocity_mae = np.mean(np.abs(pred_velocities - gt_velocities))
+    vx_mae = np.mean(np.abs(pred_velocities[:, 0] - gt_velocities[:, 0]))
+    vy_mae = np.mean(np.abs(pred_velocities[:, 1] - gt_velocities[:, 1]))
+    
+    # Speed metrics (magnitude)
+    pred_speed = np.linalg.norm(pred_velocities, axis=1)
+    gt_speed = np.linalg.norm(gt_velocities, axis=1)
+    speed_mse = np.mean((pred_speed - gt_speed) ** 2)
+    speed_rmse = np.sqrt(speed_mse)
+    speed_mae = np.mean(np.abs(pred_speed - gt_speed))
+    
+    # Direction error (angle between velocity vectors)
+    pred_norm = pred_velocities / (np.linalg.norm(pred_velocities, axis=1, keepdims=True) + 1e-8)
+    gt_norm = gt_velocities / (np.linalg.norm(gt_velocities, axis=1, keepdims=True) + 1e-8)
+    dot_product = np.sum(pred_norm * gt_norm, axis=1)
+    direction_error = np.arccos(np.clip(dot_product, -1.0, 1.0))
+    mean_direction_error = np.mean(direction_error)
+    
+    # Percentage errors
+    gt_speed_mean = np.mean(gt_speed)
+    relative_speed_error = (speed_rmse / gt_speed_mean) * 100 if gt_speed_mean > 0 else 0
+    
+    return {
+        'velocity_mse': velocity_mse,
+        'velocity_rmse': velocity_rmse,
+        'velocity_mae': velocity_mae,
+        'vx_mse': vx_mse, 'vx_rmse': vx_rmse, 'vx_mae': vx_mae,
+        'vy_mse': vy_mse, 'vy_rmse': vy_rmse, 'vy_mae': vy_mae,
+        'speed_mse': speed_mse, 'speed_rmse': speed_rmse, 'speed_mae': speed_mae,
+        'direction_error_rad': mean_direction_error,
+        'direction_error_deg': np.degrees(mean_direction_error),
+        'relative_speed_error_pct': relative_speed_error,
+        'gt_speed_mean': gt_speed_mean,
+        'pred_speed_mean': np.mean(pred_speed)
+    }
+
+
+def run_final_test_evaluation(network, args, device):
+    """
+    Run comprehensive test set evaluation after training completion.
+    """
+    print("Loading test dataset...")
+    
+    # Load test dataset
+    test_dataset = get_dataset_from_list(args.root_dir, args.test_list, args, mode='test')
+    test_loader = DataLoader(test_dataset, batch_size=512, shuffle=False)
+    
+    print(f"Test dataset: {len(test_dataset)} samples from test sequences")
+    
+    # Set network to evaluation mode
+    network.eval()
+    
+    print("Running inference on test set...")
+    test_targets, test_preds = run_test(network, test_loader, device, eval_mode=True)
+    
+    # Compute velocity metrics
+    print("\nComputing velocity prediction metrics...")
+    velocity_metrics = compute_velocity_metrics(test_preds, test_targets)
+    
+    # Print detailed results
+    print("\n" + "="*60)
+    print("FINAL TEST SET RESULTS")
+    print("="*60)
+    
+    print(f"\n📊 VELOCITY PREDICTION ACCURACY:")
+    print(f"   Overall RMSE:     {velocity_metrics['velocity_rmse']:.6f} m/s")
+    print(f"   Overall MAE:      {velocity_metrics['velocity_mae']:.6f} m/s")
+    print(f"   Overall MSE:      {velocity_metrics['velocity_mse']:.6f} m/s²")
+    
+    print(f"\n📈 COMPONENT-WISE ERRORS:")
+    print(f"   Vx RMSE:         {velocity_metrics['vx_rmse']:.6f} m/s")
+    print(f"   Vy RMSE:         {velocity_metrics['vy_rmse']:.6f} m/s")
+    print(f"   Vx MAE:          {velocity_metrics['vx_mae']:.6f} m/s")
+    print(f"   Vy MAE:          {velocity_metrics['vy_mae']:.6f} m/s")
+    
+    print(f"\n🏃 SPEED ACCURACY:")
+    print(f"   Speed RMSE:      {velocity_metrics['speed_rmse']:.6f} m/s")
+    print(f"   Speed MAE:       {velocity_metrics['speed_mae']:.6f} m/s")
+    print(f"   Relative Error:  {velocity_metrics['relative_speed_error_pct']:.2f}%")
+    print(f"   GT Mean Speed:   {velocity_metrics['gt_speed_mean']:.6f} m/s")
+    print(f"   Pred Mean Speed: {velocity_metrics['pred_speed_mean']:.6f} m/s")
+    
+    print(f"\n🧭 DIRECTION ACCURACY:")
+    print(f"   Direction Error: {velocity_metrics['direction_error_deg']:.3f}° ({velocity_metrics['direction_error_rad']:.6f} rad)")
+    
+    # Compute trajectory metrics if possible
+    print(f"\n🗺️  TRAJECTORY RECONSTRUCTION:")
+    try:
+        # Reconstruct trajectory from predicted velocities
+        pos_pred = recon_traj_with_preds(test_dataset, test_preds)[:, :2]
+        pos_gt = test_dataset.gt_pos[0][:, :2]
+        
+        # Compute trajectory errors
+        pred_per_min = 200 * 60  # 200Hz * 60s
+        ate, rte = compute_ate_rte(pos_pred, pos_gt, pred_per_min)
+        
+        # Trajectory length
+        traj_length = np.sum(np.linalg.norm(pos_gt[1:] - pos_gt[:-1], axis=1))
+        
+        print(f"   ATE:             {ate:.6f} m")
+        print(f"   RTE:             {rte:.6f} m")
+        print(f"   Trajectory Length: {traj_length:.2f} m")
+        print(f"   ATE/Length:      {(ate/traj_length)*100:.3f}%")
+        
+    except Exception as e:
+        print(f"   Could not compute trajectory metrics: {e}")
+    
+    # Save detailed results
+    if args.out_dir and os.path.isdir(args.out_dir):
+        results_file = os.path.join(args.out_dir, 'final_test_results.txt')
+        with open(results_file, 'w') as f:
+            f.write("IMUNet Final Test Set Evaluation Results\n")
+            f.write("="*50 + "\n\n")
+            f.write(f"Test Dataset: {len(test_dataset)} samples\n")
+            f.write(f"Test Sequences: {args.test_list}\n\n")
+            
+            f.write("Velocity Prediction Metrics:\n")
+            for key, value in velocity_metrics.items():
+                f.write(f"  {key}: {value:.8f}\n")
+            
+            if 'ate' in locals():
+                f.write(f"\nTrajectory Metrics:\n")
+                f.write(f"  ATE: {ate:.8f} m\n")
+                f.write(f"  RTE: {rte:.8f} m\n")
+                f.write(f"  Trajectory Length: {traj_length:.4f} m\n")
+        
+        print(f"\n💾 Detailed results saved to: {results_file}")
+    
+    print("="*60)
+    print("TEST EVALUATION COMPLETE")
+    print("="*60 + "\n")
+
+
 def train(args, **kwargs):
     # Loading data
     start_t = time.time()
@@ -380,6 +535,13 @@ def train(args, **kwargs):
                     'epoch': total_epoch}, model_path)
         print('Checkpoint saved to ', model_path)
 
+    # Run final test evaluation if test list is available
+    if hasattr(args, 'test_list') and args.test_list and os.path.exists(args.test_list):
+        print("\n" + "="*60)
+        print("RUNNING FINAL TEST SET EVALUATION")
+        print("="*60)
+        run_final_test_evaluation(network, args, device)
+    
     return train_losses_all, val_losses_all
 
 
@@ -705,7 +867,8 @@ if __name__ == '__main__':
             args.out_dir = current_dir + '/RONIN_torch/Train_out/' + args.arch + '/ridi'
         elif dataset == 'proposed':
             args.train_list = current_dir +'/Datasets/proposed/list_train.txt'
-            args.val_list = current_dir +'/Datasets/proposed/list_test.txt'
+            args.val_list = current_dir +'/Datasets/proposed/list_train.txt'  # Use train for validation during training
+            args.test_list = current_dir +'/Datasets/proposed/list_test.txt'  # Separate test set for final evaluation
             args.root_dir = current_dir + '/Datasets/proposed'
             args.out_dir = current_dir +'/RONIN_torch/Train_out/' + args.arch + '/proposed'
         elif dataset == 'oxiod':
