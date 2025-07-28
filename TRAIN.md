@@ -119,6 +119,27 @@ class CustomLayer(nn.Module):
     - Applies: output = input_features - W * raw_input + B
 ```
 
+### 3D Velocity Architecture Updates
+
+The system now automatically detects whether to use 2D or 3D output based on the dataset:
+
+```python
+# Dynamic output dimension selection in get_model()
+def get_model(arch):
+    n_class = 2  # Default to 2D
+    if args.dataset == 'px4' or args.dataset == 'proposed':
+        n_class = 3  # Use 3D for PX4 and proposed datasets
+    
+    # Model adapts automatically
+    network = IMUNet(num_classes=n_class, ...)
+```
+
+**Key improvements:**
+- **ProposedSequence**: Now generates full 3D velocity targets from position data
+- **IMUNet**: Output layer automatically adapts to 2D/3D based on `num_classes`
+- **Evaluation**: Maintains backward compatibility with 2D metrics while supporting 3D
+- **Visualization**: Automatically generates 2D or 3D plots based on prediction dimensions
+
 ## Training Configuration
 
 ### Dataset Setup
@@ -237,16 +258,21 @@ python main.py \
 ```
 
 ### Evaluation Metrics
-- **MSE Loss**: Mean squared error on velocity predictions
-- **ATE**: Absolute Trajectory Error (position accuracy)
-- **RTE**: Relative Trajectory Error (local consistency)
+- **MSE Loss**: Mean squared error on velocity predictions (vx, vy, vz for 3D)
+- **ATE**: Absolute Trajectory Error (position accuracy, computed in 2D for compatibility)
+- **RTE**: Relative Trajectory Error (local consistency, computed in 2D for compatibility)
 
 ### Output Analysis
 Test mode generates:
-- Trajectory plots (predicted vs ground truth)
-- Per-sequence error statistics
-- CSV files with detailed results
-- Visualization plots saved as PNG files
+- **Trajectory plots**: 2D plots for visualization (X-Y plane), with separate velocity component plots for vx, vy, vz
+- **Per-sequence error statistics**: Individual velocity component errors (vx, vy, vz)
+- **CSV files**: Detailed results with format `seq,vx,vy,vz,avg,ate,rte` (3D) or `seq,vx,vy,avg,ate,rte` (2D)
+- **Visualization plots**: Automatic generation of 2D or 3D plots based on prediction dimensions
+
+### 3D Evaluation Features
+- **Component-wise analysis**: Separate error metrics for each velocity component
+- **3D trajectory reconstruction**: Full 3D path reconstruction from velocity predictions
+- **Backward compatibility**: 2D trajectory metrics (ATE/RTE) maintained for comparison with existing results
 
 ## Troubleshooting
 
@@ -354,11 +380,14 @@ python convert_to_tflite.py \
 ### Conversion Features
 
 The conversion script automatically:
-1. **Converts** PyTorch model to TensorFlow Lite using ai-edge-torch
-2. **Applies optimizations** using TensorFlow Lite's default optimization suite
-3. **Validates accuracy** by comparing all three models on the test set
-4. **Measures performance** across key metrics (velocity RMSE, speed accuracy, etc.)
-5. **Saves detailed results** to JSON file for analysis
+1. **Auto-detects output dimensions** from the trained model (2D or 3D)
+2. **Converts** PyTorch model to TensorFlow Lite using ai-edge-torch
+3. **Applies optimizations** using TensorFlow Lite's default optimization suite
+4. **Validates accuracy** by comparing all three models on the test set
+5. **Measures performance** across key metrics (velocity RMSE, speed accuracy, etc.)
+6. **Saves detailed results** to JSON file for analysis
+
+**NEW: 3D Model Support** - The conversion script now automatically detects whether your trained model outputs 2D or 3D velocities and creates the appropriate TensorFlow Lite model.
 
 ### Performance Results
 
@@ -541,7 +570,9 @@ public float[][][] prepareInferenceWindows(float[][] globalFeatures) {
 #### 2. TensorFlow Lite Inference
 ```java
 public float[][] runInference(float[][][] inputWindows) {
-    float[][] predictions = new float[inputWindows.length][2]; // [vx, vy] velocity
+    // Auto-detect output dimensions from model (2D or 3D)
+    int outputDim = interpreter.getOutputTensor(0).shape()[1]; // 2 for 2D, 3 for 3D
+    float[][] predictions = new float[inputWindows.length][outputDim];
     
     for (int i = 0; i < inputWindows.length; i++) {
         // Set input tensor (1, 6, 200)
@@ -550,12 +581,15 @@ public float[][] runInference(float[][][] inputWindows) {
         // Run inference
         interpreter.run();
         
-        // Get output tensor (1, 2) 
-        float[][] output = new float[1][2];
+        // Get output tensor (1, 2) or (1, 3) depending on model
+        float[][] output = new float[1][outputDim];
         interpreter.getOutputTensor(0).copyTo(output);
         
         predictions[i][0] = output[0][0]; // vx (m/s)
-        predictions[i][1] = output[0][1]; // vy (m/s)  
+        predictions[i][1] = output[0][1]; // vy (m/s)
+        if (outputDim == 3) {
+            predictions[i][2] = output[0][2]; // vz (m/s) for 3D models
+        }
     }
     
     return predictions;
@@ -570,7 +604,8 @@ public float[][] runInference(float[][][] inputWindows) {
 | **Game Rotation** | `[x,y,z,w]` | Quaternion for orientation |
 | **Global Transform** | `[6 channels]` | `[gyro_global_xyz, accel_global_xyz]` |
 | **Model Input** | `[1,6,200]` | Batch × Channels × Time |
-| **Model Output** | `[1,2]` | `[velocity_x, velocity_y]` in m/s |
+| **Model Output 2D** | `[1,2]` | `[velocity_x, velocity_y]` in m/s |
+| **Model Output 3D** | `[1,3]` | `[velocity_x, velocity_y, velocity_z]` in m/s |
 
 ### Key Implementation Notes
 
@@ -579,7 +614,8 @@ public float[][] runInference(float[][][] inputWindows) {
 3. **Quaternion Format**: Convert Android `[x,y,z,w]` to standard `[w,x,y,z]` format
 4. **Window Overlap**: Use 10-sample stride (50ms) for smooth velocity estimates
 5. **Sensor Fusion**: Game rotation vector provides drift-free orientation without magnetometer
-6. **Memory Management**: Process windows in batches to avoid memory issues
+6. **3D Support**: Models automatically adapt to 2D or 3D output based on training dataset
+7. **Memory Management**: Process windows in batches to avoid memory issues
 
 ### Performance Optimization
 
