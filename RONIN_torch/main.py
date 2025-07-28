@@ -241,6 +241,31 @@ def compute_velocity_metrics(pred_velocities, gt_velocities):
     gt_speed_mean = np.mean(gt_speed)
     relative_speed_error = (speed_rmse / gt_speed_mean) * 100 if gt_speed_mean > 0 else 0
     
+    # Short-term prediction accuracy (100ms = 20 samples at 200Hz)
+    window_size = 20  # 100ms at 200Hz
+    short_term_errors = []
+    
+    if len(pred_velocities) >= window_size:
+        # Compute accuracy over sliding 100ms windows
+        for i in range(len(pred_velocities) - window_size + 1):
+            window_pred = pred_velocities[i:i+window_size]
+            window_gt = gt_velocities[i:i+window_size]
+            
+            # Compute trajectory displacement over 100ms window
+            pred_displacement = np.cumsum(window_pred, axis=0) * 0.005  # dt = 1/200Hz = 0.005s
+            gt_displacement = np.cumsum(window_gt, axis=0) * 0.005
+            
+            # Error at end of 100ms window (final displacement error)
+            final_error = np.linalg.norm(pred_displacement[-1] - gt_displacement[-1])
+            short_term_errors.append(final_error)
+        
+        short_term_rmse = np.sqrt(np.mean(np.array(short_term_errors) ** 2))
+        short_term_mae = np.mean(short_term_errors)
+        short_term_max = np.max(short_term_errors)
+        short_term_95th = np.percentile(short_term_errors, 95)
+    else:
+        short_term_rmse = short_term_mae = short_term_max = short_term_95th = 0.0
+    
     return {
         'velocity_mse': velocity_mse,
         'velocity_rmse': velocity_rmse,
@@ -252,7 +277,11 @@ def compute_velocity_metrics(pred_velocities, gt_velocities):
         'direction_error_deg': np.degrees(mean_direction_error),
         'relative_speed_error_pct': relative_speed_error,
         'gt_speed_mean': gt_speed_mean,
-        'pred_speed_mean': np.mean(pred_speed)
+        'pred_speed_mean': np.mean(pred_speed),
+        'short_term_100ms_rmse': short_term_rmse,
+        'short_term_100ms_mae': short_term_mae,
+        'short_term_100ms_max': short_term_max,
+        'short_term_100ms_95th_percentile': short_term_95th
     }
 
 
@@ -303,6 +332,12 @@ def run_final_test_evaluation(network, args, device):
     
     print(f"\n🧭 DIRECTION ACCURACY:")
     print(f"   Direction Error: {velocity_metrics['direction_error_deg']:.3f}° ({velocity_metrics['direction_error_rad']:.6f} rad)")
+    
+    print(f"\n⚡ SHORT-TERM PREDICTION (100ms windows):")
+    print(f"   100ms RMSE:      {velocity_metrics['short_term_100ms_rmse']:.6f} m")
+    print(f"   100ms MAE:       {velocity_metrics['short_term_100ms_mae']:.6f} m")
+    print(f"   100ms Max Error: {velocity_metrics['short_term_100ms_max']:.6f} m")
+    print(f"   100ms 95th %ile: {velocity_metrics['short_term_100ms_95th_percentile']:.6f} m")
     
     # Compute trajectory metrics if possible
     print(f"\n🗺️  TRAJECTORY RECONSTRUCTION:")

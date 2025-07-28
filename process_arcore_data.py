@@ -39,6 +39,10 @@ def interpolate_quaternion_linear(quat_data, input_timestamp, output_timestamp):
             if ptr2 == n_input:
                 break
         
+        # Ensure ptr2 doesn't go out of bounds
+        if ptr2 >= n_input:
+            ptr2 = n_input - 1
+        
         q1 = quaternion.quaternion(*quat_data[ptr1])
         q2 = quaternion.quaternion(*quat_data[ptr2])
         quat_inter[i] = quaternion.as_float_array(
@@ -57,7 +61,7 @@ def interpolate_3dvector_linear(input_data, input_timestamp, output_timestamp):
     return interpolated
 
 
-def process_arcore_sequence(data_root, skip_front=120, skip_end=120):
+def process_arcore_sequence(data_root, skip_front=200, skip_end=200):
     """Process a single ARCore sequence and create the CSV file."""
     print(f'Processing {data_root}')
     
@@ -98,6 +102,9 @@ def process_arcore_sequence(data_root, skip_front=120, skip_end=120):
     new_indices = np.linspace(0, output_timestamp.shape[0] - 1, new_length)
     spl = UnivariateSpline(old_indices, output_timestamp, k=3, s=0)
     new_output_timestamp = spl(new_indices)
+    
+    # Ensure output timestamps stay within input range
+    new_output_timestamp = np.clip(new_output_timestamp, output_timestamp[0], output_timestamp[-1])
     
     # Interpolate position and orientation
     new_position = interpolate_3dvector_linear(position, output_timestamp, new_output_timestamp)
