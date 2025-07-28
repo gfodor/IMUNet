@@ -10,7 +10,7 @@ class DSConv(nn.Module):
     expansion = 1
     def __init__(self, f_3x3, f_1x1, kernel_size, stride=1, dilation=1, downsample=False, padding=1 , inplace = True):
         super(DSConv, self).__init__()
-        self.relu = nn.ELU()
+        self.relu = nn.ReLU6()
         
         
         self.depth_wise = nn.Conv1d(f_3x3, f_3x3,kernel_size=kernel_size,groups=f_3x3,stride=stride, padding = padding ,
@@ -26,7 +26,7 @@ class DSConv(nn.Module):
                                         nn.BatchNorm1d(f_1x1))
         self.downsample = downsample
         
-        # self.elu_ = nn.ELU()
+        # self.elu_ = nn.ReLU6()
        
     def forward(self, x):
         residual = x
@@ -48,7 +48,7 @@ class DSConv_Regular(nn.Module):
     expansion = 1
     def __init__(self, f_3x3, f_1x1, kernel_size, stride=1, dilation=1, downsample=False, padding=1 , inplace = True):
         super(DSConv_Regular, self).__init__()
-        self.relu = nn.ELU()
+        self.relu = nn.ReLU6()
         
         
         self.depth_wise = nn.Conv1d(f_3x3, f_3x3,kernel_size=kernel_size,groups=f_3x3,stride=stride, padding = padding ,
@@ -90,7 +90,7 @@ class IMUNet(nn.Module):
         return nn.Sequential(
             nn.Conv2d(in_channels=in_chan, out_channels=out_chan,
                       kernel_size=kernel, stride=step),
-            nn.LeakyReLU(),
+            nn.ReLU6(),
             nn.AvgPool2d(kernel_size=(1, pool), stride=(1, pool)))
     
     
@@ -108,7 +108,7 @@ class IMUNet(nn.Module):
         self.input_block = nn.Sequential(
             nn.Conv1d(6, self.input_mult , kernel_size=7, stride=2, padding= 3, bias=False),
             nn.BatchNorm1d(self.input_mult, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True),
-            nn.ReLU(),
+            nn.ReLU6(),
             nn.MaxPool1d(kernel_size=3, stride=2, padding=1, dilation=1)
         )
 
@@ -136,7 +136,7 @@ class IMUNet(nn.Module):
         
        
         
-        self.relu = nn.ELU()
+        self.relu = nn.ReLU6()
         
       
         
