@@ -75,14 +75,14 @@ class DSConv_Regular(nn.Module):
         out += residual.clone()
         out = self.relu(out)
         return out
-class CustomLayer(nn.Module):
+class SimpleMix(nn.Module):
+    """CustomLayer expressed with primitive ops."""
     def __init__(self):
-        super(CustomLayer, self).__init__()
-        self.W = nn.Parameter(torch.randn(1, 1200))  # Learnable parameter with matching shape
-        self.b = nn.Parameter(torch.zeros(1, 1200))  # Learnable parameter with matching shape
-
-    def forward(self, TensorA, TensorB):
-        return TensorA - self.W * TensorB + self.b
+        super().__init__()
+        self.W = nn.Parameter(torch.randn(1, 1200))
+        self.b = nn.Parameter(torch.zeros(1, 1200))
+    def forward(self, a, b):
+        return torch.add(torch.sub(a, self.W * b), self.b)
     
     
 class IMUNet(nn.Module):
@@ -100,7 +100,7 @@ class IMUNet(nn.Module):
         
        
 
-        self.noise = CustomLayer()
+        self.noise = SimpleMix()
         
         self.input_mult = 64
    
