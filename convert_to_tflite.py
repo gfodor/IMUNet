@@ -69,9 +69,22 @@ def load_pytorch_model(checkpoint_path, device='cpu'):
     """Load the trained PyTorch IMUNet model"""
     print(f"Loading PyTorch model from {checkpoint_path}")
     
+    # Auto-detect output dimensions from checkpoint (2D for most datasets, 3D for proposed/px4)
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    
+    # Try to determine output dimensions from model state
+    try:
+        fc_weight_shape = checkpoint['model_state_dict']['fc.0.weight'].shape
+        num_classes = fc_weight_shape[0]  # Output dimension
+        print(f"Auto-detected output dimensions: {num_classes}D")
+    except:
+        # Fallback to 2D if detection fails
+        num_classes = 2
+        print(f"Could not auto-detect dimensions, defaulting to 2D")
+    
     # Create model instance with same parameters used in training
     model = IMUNet(
-        num_classes=2, 
+        num_classes=num_classes, 
         input_size=(1, 6, 200), 
         sampling_rate=200, 
         num_T=32, 
@@ -79,9 +92,6 @@ def load_pytorch_model(checkpoint_path, device='cpu'):
         hidden=64, 
         dropout_rate=0.5
     )
-    
-    # Load checkpoint
-    checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     

@@ -4,7 +4,9 @@ This document provides a comprehensive guide for training IMUNet on ARCore-colle
 
 ## Overview
 
-This setup trains the IMUNet neural network (from the paper "IMUNet: Efficient Neural Networks for IMU-based Human Motion Estimation") on data collected via ARCore-enabled Android devices. The model learns to predict 2D velocity from 6-axis IMU data (3-axis gyroscope + 3-axis accelerometer).
+This setup trains the IMUNet neural network (from the paper "IMUNet: Efficient Neural Networks for IMU-based Human Motion Estimation") on data collected via ARCore-enabled Android devices. The model learns to predict **3D velocity** from 6-axis IMU data (3-axis gyroscope + 3-axis accelerometer).
+
+**NEW: 3D Velocity Support** - The system now supports full 3D velocity estimation (vx, vy, vz) instead of just 2D (vx, vy). This provides more complete motion tracking including vertical movement.
 
 ## Data Pipeline Architecture
 
@@ -85,10 +87,10 @@ features = concatenate([gyro_global, acce_global])  # Shape: (N, 6)
 
 #### Target Generation
 ```python
-# Velocity targets computed from position differences
+# Velocity targets computed from position differences (now in 3D)
 dt = timestamps[i+1] - timestamps[i]
-velocity_2d = (position[i+1] - position[i]) / dt
-targets = velocity_2d[:2]  # Only X,Y velocity, Shape: (N-1, 2)
+velocity_3d = (position[i+1] - position[i]) / dt
+targets = velocity_3d[:3]  # Full X,Y,Z velocity, Shape: (N-1, 3)
 ```
 
 ### 4. Neural Network Architecture (`IMUNet.py`)
@@ -100,7 +102,7 @@ targets = velocity_2d[:2]  # Only X,Y velocity, Shape: (N-1, 2)
   - 7 DSConv blocks with skip connections
   - Channel progression: 64 → 64 → 128 → 256 → 512 → 1024
   - Global feature extraction + fully connected output
-- **Output**: 2D velocity estimate [vx, vy] in m/s
+- **Output**: 3D velocity estimate [vx, vy, vz] in m/s (automatically adapts to dataset)
 
 #### Key Components
 ```python
