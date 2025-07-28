@@ -387,6 +387,211 @@ After conversion:
 
 The quantized model provides the best balance of size and accuracy for mobile deployment.
 
+## Android Sensor API Integration
+
+To run inference with the trained TensorFlow Lite model on Android devices, you need to properly read sensor data and apply the correct transformations to match the training data format.
+
+### Required Android Sensors
+
+The IMUNet model requires 6-channel IMU data from these Android sensors:
+
+```java
+// Required sensors
+private SensorManager sensorManager;
+private Sensor accelerometer;  // TYPE_ACCELEROMETER 
+private Sensor gyroscope;      // TYPE_GYROSCOPE
+private Sensor gameRotation;   // TYPE_GAME_ROTATION_VECTOR
+
+// Initialize sensors
+sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
+accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+gyroscope = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
+gameRotation = sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
+
+// Register listeners at 200Hz (SENSOR_DELAY_FASTEST)
+sensorManager.registerListener(this, accelerometer, SensorManager.SENSOR_DELAY_FASTEST);
+sensorManager.registerListener(this, gyroscope, SensorManager.SENSOR_DELAY_FASTEST);
+sensorManager.registerListener(this, gameRotation, SensorManager.SENSOR_DELAY_FASTEST);
+```
+
+### Data Collection and Preprocessing
+
+#### 1. Raw Sensor Data Collection
+```java
+@Override
+public void onSensorChanged(SensorEvent event) {
+    long timestamp = event.timestamp; // nanoseconds
+    
+    switch (event.sensor.getType()) {
+        case Sensor.TYPE_ACCELEROMETER:
+            // Raw accelerometer: [x, y, z] in m/s²
+            float[] accel = {event.values[0], event.values[1], event.values[2]};
+            storeAccelData(timestamp, accel);
+            break;
+            
+        case Sensor.TYPE_GYROSCOPE:
+            // Raw gyroscope: [x, y, z] in rad/s
+            float[] gyro = {event.values[0], event.values[1], event.values[2]};
+            storeGyroData(timestamp, gyro);
+            break;
+            
+        case Sensor.TYPE_GAME_ROTATION_VECTOR:
+            // Game rotation vector: [x, y, z, w] (quaternion)
+            float[] gameRV = {event.values[0], event.values[1], event.values[2], 
+                             event.values.length > 3 ? event.values[3] : 0.0f};
+            storeOrientationData(timestamp, gameRV);
+            break;
+    }
+}
+```
+
+#### 2. Data Synchronization and Resampling
+```java
+// Resample all sensor data to uniform 200Hz timeline
+public float[][] resampleTo200Hz(long[] timestamps, float[][] data) {
+    // Target: 200Hz = 5ms intervals
+    long startTime = timestamps[0];
+    long endTime = timestamps[timestamps.length - 1];
+    long duration = endTime - startTime;
+    int targetSamples = (int) (duration / 5_000_000L); // 5ms in nanoseconds
+    
+    // Use linear interpolation to resample to 200Hz
+    float[][] resampled = new float[targetSamples][data[0].length];
+    // ... interpolation logic
+    return resampled;
+}
+```
+
+#### 3. Coordinate Frame Transformation
+**Critical: Transform sensor data from device frame to global frame using game rotation vector**
+
+```java
+public float[][] transformToGlobalFrame(float[][] gyroData, float[][] accelData, 
+                                       float[][] gameRotationData) {
+    int numSamples = gyroData.length;
+    float[][] globalFeatures = new float[numSamples][6];
+    
+    for (int i = 0; i < numSamples; i++) {
+        // Convert game rotation vector to quaternion [w, x, y, z]
+        float[] gameRV = gameRotationData[i];
+        float[] quat;
+        if (gameRV.length == 4) {
+            quat = new float[]{gameRV[3], gameRV[0], gameRV[1], gameRV[2]}; // [w,x,y,z]
+        } else {
+            // If w component missing, compute it
+            float x = gameRV[0], y = gameRV[1], z = gameRV[2];
+            float w = (float) Math.sqrt(Math.max(0, 1 - x*x - y*y - z*z));
+            quat = new float[]{w, x, y, z};
+        }
+        
+        // Transform gyroscope to global frame: q * gyro_quat * q.conj()
+        float[] gyroGlobal = quaternionRotateVector(quat, gyroData[i]);
+        
+        // Transform accelerometer to global frame: q * accel_quat * q.conj()  
+        float[] accelGlobal = quaternionRotateVector(quat, accelData[i]);
+        
+        // Combine into 6-channel feature vector: [gyro_x, gyro_y, gyro_z, accel_x, accel_y, accel_z]
+        System.arraycopy(gyroGlobal, 0, globalFeatures[i], 0, 3);
+        System.arraycopy(accelGlobal, 0, globalFeatures[i], 3, 3);
+    }
+    
+    return globalFeatures;
+}
+
+private float[] quaternionRotateVector(float[] quat, float[] vector) {
+    // Rotate 3D vector by quaternion: q * [0,v] * q.conj()
+    float qw = quat[0], qx = quat[1], qy = quat[2], qz = quat[3];
+    float vx = vector[0], vy = vector[1], vz = vector[2];
+    
+    // Quaternion multiplication: q * [0,v] * q.conj()
+    float[] result = new float[3];
+    result[0] = vx*(qw*qw + qx*qx - qy*qy - qz*qz) + 2*vy*(qx*qy - qw*qz) + 2*vz*(qx*qz + qw*qy);
+    result[1] = 2*vx*(qx*qy + qw*qz) + vy*(qw*qw - qx*qx + qy*qy - qz*qz) + 2*vz*(qy*qz - qw*qx);
+    result[2] = 2*vx*(qx*qz - qw*qy) + 2*vy*(qy*qz + qw*qx) + vz*(qw*qw - qx*qx - qy*qy + qz*qz);
+    
+    return result;
+}
+```
+
+### Model Inference Pipeline
+
+#### 1. Sliding Window Data Preparation
+```java
+public float[][][] prepareInferenceWindows(float[][] globalFeatures) {
+    int windowSize = 200;  // Model expects 200 timesteps
+    int stepSize = 10;     // 10-sample stride (50ms at 200Hz)
+    int numWindows = (globalFeatures.length - windowSize) / stepSize + 1;
+    
+    float[][][] windows = new float[numWindows][1][windowSize * 6]; // Batch x Channels x Time
+    
+    for (int w = 0; w < numWindows; w++) {
+        int startIdx = w * stepSize;
+        for (int t = 0; t < windowSize; t++) {
+            for (int c = 0; c < 6; c++) {
+                windows[w][0][c * windowSize + t] = globalFeatures[startIdx + t][c];
+            }
+        }
+    }
+    return windows;
+}
+```
+
+#### 2. TensorFlow Lite Inference
+```java
+public float[][] runInference(float[][][] inputWindows) {
+    float[][] predictions = new float[inputWindows.length][2]; // [vx, vy] velocity
+    
+    for (int i = 0; i < inputWindows.length; i++) {
+        // Set input tensor (1, 6, 200)
+        interpreter.getInputTensor(0).copyFrom(inputWindows[i]);
+        
+        // Run inference
+        interpreter.run();
+        
+        // Get output tensor (1, 2) 
+        float[][] output = new float[1][2];
+        interpreter.getOutputTensor(0).copyTo(output);
+        
+        predictions[i][0] = output[0][0]; // vx (m/s)
+        predictions[i][1] = output[0][1]; // vy (m/s)  
+    }
+    
+    return predictions;
+}
+```
+
+### Data Format Summary
+
+| Stage | Format | Description |
+|-------|--------|-------------|
+| **Raw Sensors** | Device Frame | Android sensor coordinates |
+| **Game Rotation** | `[x,y,z,w]` | Quaternion for orientation |
+| **Global Transform** | `[6 channels]` | `[gyro_global_xyz, accel_global_xyz]` |
+| **Model Input** | `[1,6,200]` | Batch × Channels × Time |
+| **Model Output** | `[1,2]` | `[velocity_x, velocity_y]` in m/s |
+
+### Key Implementation Notes
+
+1. **Sampling Rate**: Maintain 200Hz uniform sampling for consistency with training data
+2. **Coordinate Frames**: Always transform to global frame using game rotation vector
+3. **Quaternion Format**: Convert Android `[x,y,z,w]` to standard `[w,x,y,z]` format
+4. **Window Overlap**: Use 10-sample stride (50ms) for smooth velocity estimates
+5. **Sensor Fusion**: Game rotation vector provides drift-free orientation without magnetometer
+6. **Memory Management**: Process windows in batches to avoid memory issues
+
+### Performance Optimization
+
+```java
+// Enable NNAPI for hardware acceleration
+NnApiDelegate nnApiDelegate = new NnApiDelegate();
+Interpreter.Options options = new Interpreter.Options();
+options.addDelegate(nnApiDelegate);
+options.setNumThreads(4); // Adjust based on device
+Interpreter interpreter = new Interpreter(modelBuffer, options);
+```
+
+This preprocessing pipeline ensures that your Android sensor data matches exactly the format expected by the trained IMUNet model for accurate velocity estimation.
+
 ## References
 
 - **IMUNet Paper**: [Add paper reference when available]
